@@ -4,4 +4,4 @@ These are designs for unimplemented features in or related to Lightbeam. For "ac
 
 TODO
 
-[roadmap]: ./roadmap.md
+[roadmap]: ../roadmap.md
