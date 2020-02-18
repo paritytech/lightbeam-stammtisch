@@ -130,7 +130,125 @@ is more explicit. This would allow us to realise where code is and isn't being o
 optimisations that we could implement, and isolate places where optimisations are being executed
 incorrectly.
 
+## Proposed Solution
+
+I propose a system in 3 parts, as outlined in the introduction. I dive deeper into each component
+in their respective articles, but as a high-level overview to explain what I believe are the
+benefits to this system, I'll elaborate on a few examples that showcase what I believe to be the
+relative elegance of this approach in the context of Lightbeam, with explanations of how the system
+will handle these examples.
+
+> *NOTE*: I will exclusively use _instruction_ to refer to a specific opcode in the target ISA
+> (x86, ARM, etc), and I will use _action_ to refer to a single operation in Low IR, this will look
+> like `LOWIR::xxx.yy`, where `xxx` is the opcode of the action and `yy` is the size in bits. For
+> example, 64-bit add is `LOWIR::add.64`, and 32-bit add is `LOWIR::add.32`. This is just shorthand
+> pseudocode for now, I elaborate more on how I imagine this will actually look in the codebase in
+> the [Low IR article][low-ir]. The distinction between _action_ and _instruction_ is very
+> important, and so I will go out of my way to ensure that it is always clear which I am talking
+> about.
+
+### Example: Optimising Memory Accesses
+
+For an example of how Low IR works, here's an example of some code in Low IR that loads a value
+from memory and then multiplies it with some other value (in strawman syntax).
+
+```
+%fooaddr = LOWIR::add.64 %stackptr, 10
+%foo     = LOWIR::load.32 %fooaddr
+%bar     = ;; .. snip ..
+
+%out     = LOWIR::mul.32 %bar, %foo
+```
+
+You can see that the memory address calculation and loads are explicitly written out here. LIRC
+will pass this sequence of actions to AsmQuery, which will return a sequence of instructions
+that implements the required behaviour. AsmQuery will have Low IR defined for instructions in the
+target ISA like so (in pseudocode):
+
+> *NOTE*: I will often describe LIRC passing a "sequence of actions" and receiving a "sequence of
+> instructions", which makes the process sound like it is implemented eagerly. In fact, this process
+> is incremental, and LIRC's state needs to be updated after each instruction is emitted anyway. I
+> elaborate on this in the [article for LIRC][lirc]. For simplicity though, I want to focus on the
+> conceptual passing of data and not the implementation in this overview.
+
+```
+definstr "mul r32, r32"(%lhs: Register, %rhs: Register):
+  location(%out) = location(%lhs)
+
+  %out      = LOWIR::mul.32 %lhs, %rhs
+
+definstr "mul r32, [r32]"(%lhs: Register, %rhs_addr: Register):
+  location(%out) = location(%lhs)
+
+  %rhs      = LOWIR::load.32 %rhs_addr
+  %out      = LOWIR::mul.32 %lhs, %rhs
+
+definstr "mul r32, [r32 + imm32]"(%lhs: Register, %rhs_base: Register, %rhs_imm_offset: Immediate):
+  location(%out) = location(%lhs)
+
+  %rhs_addr = LOWIR::add.32 %rhs_base, %rhs_imm_offset
+  %rhs      = LOWIR::load.32 %rhs_addr
+  %out      = LOWIR::mul.32 %lhs, %rhs
+```
+
+If we look at the third form of the instruction, for example, this basically says that internally,
+`mul r32, [r32 + imm32]` adds the base (which is in a register) and the offset (which is an
+immediate) together, loads the value at the address given by the result of this addition, and then
+multiplies the result of this load by the LHS (which is in a register). The `location(%out) =
+location(%lhs)` statement says that the result of this multiplication is written to the physical
+location of `%lhs`. You'll notice that the intermediate values (the result of the addition to
+calculate the address, and the result of the load) don't have any location defined. This means that
+although later parts of this instruction _can_ access these values, once this instruction has been
+emitted those values become inaccessible. Let's say that instead of just using that loaded value in
+the `mul.32`, you also need it later, as an argument for some other action. In this case, if there
+is no single instruction that does the load, the `mul`, _and_ this other action, then you'll need
+to first emit an instruction that loads the value to a physical location, _then_ a `mul` with that
+physical location, _then_ the other action. Because this information is declaratively defined,
+there doesn't need to be any special-casing here, to compile a sequence of actions to a single
+instruction, we only need to ensure that all values that are still reachable after that sequence
+have physical locations tied to them.
+
+There's no "return" statement, as it's possible for instructions to leave many values in many
+places. I didn't write it out in these example instruction definitions, but `mul` also sets flags
+based on its inputs, and so in addition to `%out = ...` you can have `%is_zero = LOWIR::is_zero.32
+%out` for instructions that set bits based on whether their output is zero. The only thing that
+matters to LIRC is that if it wants a value to be preserved between instructions, it needs to have
+a defined location. That can either be a location defined in terms on the instruction's arguments
+(for example, for `mul r32, ..` we can say that the output of the `mul` is written to the same
+location as the first argument), or as a specific location, as is the case with `%is_zero` (where
+we would define `location(%is_zero)` to be the `ZF` bit of the `FLAGS` register). LIRC only cares
+that the instruction definition defines physical locations for all values that are still live at
+the end of the sequence of Low IR instructions.
+
+> *NOTE*: I cannot stress enough that these `LOWIR::xxx.yy` instructions are just an arbitrary
+> string. AsmQuery only cares that it was asked for an instruction that implements `add.32`, pass
+> the result to `load.32`, pass the result to `mul.32`. If you had some wild instruction
+> `foobarqux.666`, it would work exactly the same. Having said that, may one day use the `.yy` bit
+> size information to fall back to instructions implementing larger-bitsize versions of the same
+> action, but for now it's not important.
+
+### Example: Register Allocation Correctness
+
+The original reason for adding a layer of abstraction was to make debugging easier, as right now
+most bugs must be debugged by simply looking through the backend code and the compiled output and
+trying to divine what (if anything) is wrong. For an example of something which is easy to get
+wrong when things need to be maintained manually, I'd say that the best two examples are calling
+conventions, and the x86 `div` instruction. I'll start with calling conventions.
+
+When we compile a [Microwasm][microwasm] block, we have to maintain its calling convention. The
+calling convention is basically: what physical locations hold the arguments to that block, and the
+value of the stack pointer at the start of the block. The stack pointer must be set to the correct
+value when entering a block, because that block must be able to set the stack pointer to the
+correct value when it passes control to the block after it, and so on, and eventually when the
+function returns the stack value must be set to the value that it was at the start of the function
+or the program will segfault, or even worse, not segfault.
+
+> *NOTE*: This is an issue that most compilers don't have to deal with, I dive deeper into that
+> specific topic in the [constraints][constraints] article.
+
 [backend]: ../design/backend.md
+[microwasm]: ../design/microwasm.md
+[constraints]: ../design/constraints.md
 [low-ir]: ./low-ir.md
 [asmquery]: ./asmquery.md
 [lirc]: ./lirc.md
