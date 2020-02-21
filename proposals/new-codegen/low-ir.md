@@ -254,6 +254,7 @@ enum CCStackDepth {
 /// A Low IR compilation "context". This is the interface the programmer uses to communicate with
 /// LIRC. Unlike Microwasm, we simply use method calls instead of having an actual "Operator"
 /// enum, as this allows us to easily give names to values.
+// TODO: This has no way to define including literal bytes, which is necessary for many operations.
 trait Context<Action> {
     /// Create a new immediate value.
     fn imm(&mut self, val: Immediate) -> Value;
