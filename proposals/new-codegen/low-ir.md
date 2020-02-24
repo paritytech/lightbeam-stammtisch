@@ -366,8 +366,8 @@ impl Architecture for X86Backend {
         //       handle arbitrary numbers of items on the stack. Handling this correctly and
         //       efficiently is out of scope for this sketch, for now.
         let callee_ret = ctx.new_cc(&[
-            RAX.into(),
             VMCTX_REGISTER.into(),
+            RAX.into(),
             AnyLoc::reg(CALLEE_SAVED_REGS),
             AnyLoc::reg(CALLEE_SAVED_REGS),
         ]);
@@ -424,11 +424,11 @@ impl Architecture for X86Backend {
         //       handling this. Probably this will involve some scheme using iterators, and so it
         //       is out of scope for this sketch.
         let (stack0, stack1, stack2) = (self.pop(), self.pop(), self.pop());
-        let _ = ctx.pass_cc(callee_cc, [Some(vmctx3), Some(callee_vmctx), Some(stack0)]);
         let [result, vmctx, stack1, stack2] = ctx.pass_cc(
             callee_ret,
             [None, None, Some(stack1), Some(stack2)]
         );
+        let _ = ctx.pass_cc(callee_cc, [Some(vmctx3), Some(callee_vmctx), Some(stack0)]);
 
         ctx.action_discard(LowIR::BrLink, &[callee_body_ptr]);
         ctx.action_discard(LowIR::Br, &[rest]);
@@ -456,6 +456,105 @@ preserved after the call, but I believe that the important thing is that we have
 specifics of the API for handling this isn't important enough for it to be included here and can be
 designed as we go along, as we build the system itself. If this turns out to be a more difficult
 design than it appears and we need to discuss it more fully, I can return to this document then.
+
+## Unresolved Questions/Alternatives
+
+### Value Stack
+
+It might turn out to be better to have LIRC maintain the value stack, too. This is because it might
+make ensuring correctness easier if we maintain the invariant that a given value ID _always_ maps to
+the same location, but since we still want to give LIRC the ability to move values around if
+necessary we need to have _some_ way to automatically split values in two, and having the Low IR
+writer explicitly mark points where values can be shifted around is a pretty overwhelming annotation
+burden. Having LIRC maintain the stack makes this simple - if the value is in scope, then it will
+always have the same location. To push it to the stack, ownership is transferred, and so there's no
+guarantee that `pop` will return the same thing passed to `push` - the value type is opaque so the
+Low IR author can't tell the difference anyway. How this interacts with calling conventions is still
+left to be determined.
+
+A related question is whether we should have `pass_cc` return the new value locations, or to have
+`set_cc` return the list of valid values, where it would be up to the Low IR to correctly handle the
+return value of `set_cc`. This would also make it simpler to handle saving the entire stack (which
+doesn't have a static size) - you can say that the first N arguments are `vmctx`, the callee's
+return value, etc, and then after that you just push everything back to the value stack.
+
+### Should Calling Conventions Also Be Refcounted
+
+To avoid causing unbounded (though still linear) memory usage, we have to be able to free a calling
+convention when it's no longer needed, but it's not at all clear that we need to actually refcount
+them. We could just free the calling convention once `set_cc` is used, which would cover _almost_
+all of our usecases. The one usecase it doesn't cover is when control flow splits - specifically for
+`BrIf` and friends. This is because when we do `BrIf`, we want the if and else branches to have the
+same calling convention, and since calling conventions are mutable (generic arguments can become
+concrete after `pass_cc`), we can't just create two identical calling conventions - they have to
+point to the same data so that when we pass values to one the other will also have the correct
+locations set. Unlike with value liveness, though, this doesn't affect correctness, and so it can be
+considered a implementation detail/optimisation and can be mostly left out of the design, apart from
+this short acknowledgement.
+
+### Explicit vs Implicit "Safe Locations"
+
+In the example above, the values that need to be saved over the call are handled by sending them to
+a calling convention where the valid locations for the "save values" calling convention are
+essentially the inverse of that of the arguments for the callee. An alternative would be for a
+calling convention to define "safe locations". This would change `pass_cc` to invalidate _all_
+values, not just the ones explicitly passed to `pass_cc`, and the ones not explicitly passed would
+then be saved based on which locations are deemed "safe". The reason I didn't choose this was
+because it basically just adds a second calling convention system on top of the first, they both
+handle "put this abstract value into this concrete location or one of a set of concrete locations".
+The only thing that this changes is that we now have this implicit use of values, which means we
+then can't maintain our invariant of a value always having a single location, which as mentioned in
+the value stack section above can be useful for ensuring correctness. It also reduces the magic,
+since you can never "accidentally" save a value that you didn't actually need any more, it's always
+explicit.
+
+### Separate `BrLink` vs `Br` + Explicitly Saving Instruction Pointer
+
+`BrLink` would correspond to `call` on x86, and on all archictectures that I'm aware of saves the IP
+_after_ the instruction and then jumps. Correctly encoding this in Low IR (which would be necessary
+for writing both the machine specification and the Low IR input to LIRC) is difficult, as it
+operates in terms of _instructions_ instead of _actions_. What if, for example, there was an
+instruction on some architecture that did everything `call` did plus some side-action like setting
+flags, should LIRC combine those two actions? Well, it depends on whether the control flow is
+important WRT whether those flags should be set. For example, the callee might overwrite the
+location that this `call`-like instruction had set, but the code afterwards would assume that this
+location was still valid.
+
+We have a couple options to get around this, the simpler option is to just have some "sync" method
+on `ctx` that would explicitly force an instruction to be emitted. The more conceptually clean
+option would be to have a Microwasm-style system of blocks of straight-line code ending in an
+unconditional jump, except that brings the Low IR one step further away from the machine and has
+some difficult unanswered questions. Here's what that might look like:
+
+```rust
+let callee_cc = ctx.new_cc(&[
+    STACK_PTR.into(),
+    VMCTX_REGISTER.into(),
+    CALLER_VMCTX_REGISTER.into(),
+    RDX.into(),
+]);
+let callee_ret = ctx.new_cc(&[
+    STACK_PTR.into(),
+    VMCTX_REGISTER.into(),
+    RAX.into(),
+    AnyLoc::reg(CALLEE_SAVED_REGS),
+    AnyLoc::reg(CALLEE_SAVED_REGS),
+]);
+
+let return_label = ctx.unknown();
+let stack_ptr = ctx.action(LowIR::Sub(64), &[stack_ptr, 8]);
+ctx.action_discard(LowIR::Store, &[stack_ptr, return_label]);
+ctx.br(callee_cc, &[stack_ptr, callee_vmctx, vmctx, argument]);
+ctx.define_label(return_label, callee_ret);
+```
+
+But then LIRC would have to handle `define_label` being immediately called after `br` vs not being
+immediately called, and so forth. It's a pretty bad rabbit hole. I think having `BrLink` be
+considered "not control flow" as far as LIRC is concerned is good enough (after all, control flow
+resumes directly after the call like other straight-line instructions), and I think we can even get
+away with having LIRC not understand `Br` and `BrLink` at all, and handling all control flow
+explicitly with the calling convention system alone. I'd say that this is solved well-enough by a
+`sync` method alone.
 
 [asmquery]: ./asmquery.md
 [linear-types]: https://en.wikipedia.org/wiki/Substructural_type_system#Linear_type_systems

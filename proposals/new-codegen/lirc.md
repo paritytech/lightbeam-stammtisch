@@ -119,12 +119,8 @@ outline of the design of the different responsibilities of LIRC is given below.
 
 ### Value System
 
-The value system is essentially a simple map from unique value ID -> location. Each value has a
-location, although unlike traditional compilers that location does not need to be globally static -
-it can change over the course of the function. The only thing that matters is that at points of
-control flow splitting and merging, values are in consistent locations. It is not even necessarily
-true that a value has a unique location, it may be possible to access this value in multiple
-locations.
+The value system is essentially a simple map from unique value ID -> location. When a value goes out
+of scope it is removed from the map.
 
 [backend-driver]: ../design/backend-driver.md
 [design-overview]: ../design/
