@@ -26,9 +26,21 @@ isn't workable indefinitely.
 ## 2. Cleanup and removal of unnecessary code
 
 Lightbeam has a lot of cruft due to attempted and subsequently rolled-back abstractions, and just
-the general exploratory nature of the project combined with the low amount of manpower. A lot of this can be cleaned up to make Lightbeam easier to work on.
+the general exploratory nature of the project combined with the low amount of manpower. A lot of
+this can be cleaned up to make Lightbeam easier to work on.
 
-TODO: Give examples of what needs to be cleaned up
+- The label system is massively overengineered due to the fact that it seemed like far more
+  complexity was going to be necessary. Now that we have little remaining complexity in the usecases
+  of the label system, we can reduce the complexity.
+- Most abstraction is done via macros, which are error-prone and difficult to work with.
+  Unfortunately this isn't really avoidable with the current system where the backend handles
+  everything. See #3 for some points on fixing this.
+- The harness written for Lightbeam's tests before the Wasmtime integration is incomplete and since
+  the migration from `wasmparser` to `wasm-reader` it no longer functions at all. The old tests are
+  unnecessary and don't cover anything that Wasmtime's test suite doesn't, and the Wasmtime test
+  suite is far easier to write new testcases in. The need to be abstract over Lightbeam test harness
+  vs Wasmtime harness adds a lot of complexity that can be fixed by simply directly relying on
+  Wasmtime's harness. This also means that entire files can be deleted wholesale.
 
 ## 3. Start abstracting and otherwise fixing up the codegen
 
@@ -38,10 +50,11 @@ Full explanation: [New Codegen Proposal][new-codegen]
 
 Examples of other backends that would be good to implement:
 
-- 32-bit x86, both because it's widely-used and because it has a weird handling of floating-point numbers that will lead us to improving our abstractions
+- 32-bit x86, both because it's widely-used and because it has a weird handling of floating-point
+  numbers that will lead us to improving our abstractions
 - ARMv7, because it's used on Raspberry Pis and other small, low-powered Linux devices
 - AVR, because it's common on microcontrollers
 
+[new-codegen]: ./proposals/new-codegen/
 [stack-depth]: https://github.com/CraneStation/lightbeam/issues/27
 [status]: ./status.md
-[new-codegen]: ./proposals/new-codegen/
