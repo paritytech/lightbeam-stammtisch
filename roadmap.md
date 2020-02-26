@@ -1,6 +1,47 @@
 # Roadmap
 
-This is the proposed higher-level future path for Lightbeam development, as well as related
-projects and features that either require Lightbeam or are tied to it in some meaningful way.
+This is the proposed higher-level future path for Lightbeam development, as well as related projects
+and features that either require Lightbeam or are tied to it in some meaningful way.
 
-TODO
+## 1. Bugfixes
+
+The first thing that needs to be dealt with is this ["stack depth mistracking"][stack-depth] error
+that has existed in Lightbeam for a while now. This is, as far as I can tell, the only thing
+stopping Lightbeam from being integrated in a preliminary capacity into Substrate. I have reason to
+believe that this bug is now fixed, but in order to test it we have to finish integrating Lightbeam
+with Wasmtime. This work was done, but because of Lightbeam's ad-hoc approach to some parts of the
+compilation pipeline (see [status][status]) it's tough for the Wasmtime team to make changes to
+Lightbeam to keep it in sync with the latest changes in Wasmtime, which means that when major
+breaking changes happen we end up with a lot of bugfixes needing to be applied which can be non-
+trivial to figure out given our distance from the Wasmtime team.
+
+The current status of this refactor is that we have the information on what needs to be changed,
+although it's not clear if this information is complete as we still need to make some fairly major
+changes to Lightbeam in order to make changes. A big issue is that there is a circular dependency
+between `wasmtime-environ` and Lightbeam, where Lightbeam must have access to certain types in order
+to correctly implement access to runtime functions. This is currently implemented by simply copying
+the relevant types and functions, which for our uses works for now. Obviously, though, this solution
+isn't workable indefinitely.
+
+## 2. Cleanup and removal of unnecessary code
+
+Lightbeam has a lot of cruft due to attempted and subsequently rolled-back abstractions, and just
+the general exploratory nature of the project combined with the low amount of manpower. A lot of this can be cleaned up to make Lightbeam easier to work on.
+
+TODO: Give examples of what needs to be cleaned up
+
+## 3. Start abstracting and otherwise fixing up the codegen
+
+Full explanation: [New Codegen Proposal][new-codegen]
+
+## 4. Implementation of other backends
+
+Examples of other backends that would be good to implement:
+
+- 32-bit x86, both because it's widely-used and because it has a weird handling of floating-point numbers that will lead us to improving our abstractions
+- ARMv7, because it's used on Raspberry Pis and other small, low-powered Linux devices
+- AVR, because it's common on microcontrollers
+
+[stack-depth]: https://github.com/CraneStation/lightbeam/issues/27
+[status]: ./status.md
+[new-codegen]: ./proposals/new-codegen/
