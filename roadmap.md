@@ -41,10 +41,38 @@ this can be cleaned up to make Lightbeam easier to work on.
   suite is far easier to write new testcases in. The need to be abstract over Lightbeam test harness
   vs Wasmtime harness adds a lot of complexity that can be fixed by simply directly relying on
   Wasmtime's harness. This also means that entire files can be deleted wholesale.
+- Overuse of copying and cloning. We currently use `Vec` _everywhere_ in Lightbeam, and although
+  some steps have been taken to use iterators where possible (most notably, the latest version of
+  the Microwasm converter no longer returns a `Vec` but instead returns an iterator, although the
+  details of that iterator are still a bit janky). The main place where allocation is problematic
+  right now is in calling conventions for Microwasm labels. Currently these are just a huge number
+  of uniquely allocated vectors. Ultimately we could design the compiler in a way that avoids as
+  much of the cloning as possible, but until that's proved necessary simply dropping in a persistent
+  `Vector` type that has a zero-cost clone should be enough - data will be shared and cloning will
+  happen in small, manageable amounts only when necessary. The same basic idea can be applied to
+  minimise cloning in Low IR, if that's proved necessary. Of course, the added complexity reduces
+  our performance by constant amounts in exchange for improving our algorithmic complexity, and so
+  we should resort to this only if there's no clear simpler way to achieve the same performance, but
+  this should only matter for very small files and should make our average performance better. A
+  good option that avoids writing anything to a data structure, and which could even remove the cost
+  of matching on Microwasm variants altogether, would be to flip the callstack - so instead of
+  passing a datastructure out to a function, which then matches on that structure, it instead calls
+  one of a set of methods (probably defined by a trait). This could radically improve our
+  performance, and Low IR has been designed around this archictecture from the ground up. Low IR is
+  far easier to design around this than Microwasm though, as Low IR is also designed to need 0-
+  operator lookahead, whereas Microwasm requires 1-operator lookahead. Lookahead is trivial when
+  you're already in a single function context, but far more difficult if you have to separate match
+  arms into unique methods and manually maintain any state that needs to be kept between method
+  calls. It's not clear, but it's possible that this could be fixed using async functions and/or
+  generators.
 
 ## 3. Start abstracting and otherwise fixing up the codegen
 
-Full explanation: [New Codegen Proposal][new-codegen]
+> Full explanation: [New Codegen Proposal][new-codegen]
+
+As explained elsewhere, our current codegen system is far too ad-hoc and this leads to brittleness,
+along with a difficulty understanding the codebase and a difficulty following the invariants
+required by the abstractions used.
 
 ## 4. Implementation of other backends
 
