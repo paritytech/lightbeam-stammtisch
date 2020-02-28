@@ -227,7 +227,7 @@ mod asmquery {
     }
 
     trait MachineSpec {
-        /// The type used to represent a single Low IR Action 
+        /// The type used to represent a single Low IR Action
         type Action;
 
         /// Maximum number of actions in a single instruction definition
@@ -282,7 +282,7 @@ impl<A, const C: usize> ActionStack<A, C> {
     }
 }
 
-struct LIRC<Backend, MachineSpec> 
+struct LIRC<Backend, MachineSpec>
 where
     MachineSpec: asmquery::MachineSpec,
 {
@@ -364,6 +364,107 @@ where
 }
 ```
 
+### Instruction Selection pt. 2: What makes a "valid" instruction
+
+So we hand-waived over a couple things in the above example code - firstly, `MachineSpec::instrs`,
+which is the responsibility of [AsmQuery][asmquery] and therefore out of scope of this article, and
+secondly `instr_valid`. `instr_valid` checks if the given instruction has the "correct" inputs and
+outputs. A lot of this work can be delegated to AsmQuery, but `instr_valid` will cover anything
+remaining. Let's go over what an instruction needs to have to be valid:
+
+#### 1. Flow of values must be correct
+
+For example, these two sequences would match:
+
+```
+Input:
+%foo = LOWIR::add.32 %a, %b
+%bar = LOWIR::add.32 %foo, %a
+
+MachineSpec:
+%2 = LOWIR::add.32 %0, %1
+%3 = LOWIR::do_something %0, %1
+%4 = LOWIR::add.32 %2, %0
+```
+
+Even though in the MachineSpec there's another action in between, the flow of data is the same
+(assuming that `%a` and `%b` are valid). However, these two would _not_ match:
+
+```
+Input:
+%foo = LOWIR::add.32 %a, %b
+%bar = LOWIR::add.32 %foo, %a
+
+MachineSpec:
+%2 = LOWIR::add.32 %0, %1
+%4 = LOWIR::add.32 %2, %1
+                       ^^ 1 instead of 0
+```
+
+Even though they both do two adds, the arguments are incorrect - `%4` should be the result of the
+addition of `%2` and `%0`.
+
+Checking for this is handled by AsmQuery.
+
+#### 2. Parameters must be correct
+
+In the sequences given above, `%a` and `%b` aren't defined within the sequence. Therefore, it must
+be possible to pass these in from the outside world. If the input sequence needs an instruction that
+takes a certain value as an input and does some operation on it, but some instruction does that
+operation on other values that they've generated internally, then that instruction wouldn't match
+that input.
+
+Checking for this is handled by AsmQuery.
+
+### 3. Output values must be reachable
+
+If an instruction produces a value, and that value is needed later, then the instruction must put
+the value into a reachable location - i.e. a specific register. If that instruction produces the
+result of some desired action but only uses it internally, then it's no use.
+
+Checking for this is handled by LIRC, as whether or not a value needs to be reachable depends on the
+reference count of the given value. If the reference count at the end of the sequence is 0, then we
+know that the value doesn't need to be reachable. If the reference count at the end of the sequence
+is 1 or more, then we know that the value _does_ need to be reachable. `action_discard` (discussed
+in the [Low IR article][low-ir]) could be implemented as a special case of `action` where the
+reference count of the output of the action is 0.
+
+### 4. Registers used must not overlap with any registers that cannot be affected
+
+If we're emitting instructions to pass values to a calling convention, we want to make sure that any
+instructions we emit don't stomp on any of the locations in that calling convention that have
+already been initialised. For example, if we need to set stack depth but the calling convention
+needs some value in the `CF` flag, `lea` would be valid (as it does not step on that flag) but
+`add`/`sub` would not.
+
+Checking for this is also handled by LIRC, as AsmQuery is stateless and has no concept of whether a
+register is occupied or not.
+
+Additionally, we could add a simple ranking system, which would just list the remaining valid
+instructions in ascending order of how many `mov`s would need to be emitted. This is not necessary,
+however, and is simply an optimisation.
+
+## Possible Extensions
+
+### Reusing side-effects
+
+When we emit an instruction, there may be additional actions that the instruction does on top of the
+ones that we specifically requested. We could additionally tag values with the action that created
+it, including values that were created as side-effects. This would require an additional map from
+action to value. It would be a relatively simple optimisation to implement, as all the hard work
+around making sure that value locations remain valid is already automatically handled by the value
+system as it already exists, but it's not clear if it would actually improve performance and it
+means that there can exist values that are in the `value_locations` hashmap but have a refcount of 0 -
+because the refcount is only for _explicit_ references, and so the refcount would only become 1 if
+`action` was called with the action that generated that value. This also complicates _other_ code,
+as we need to add an extra path to the location-invalidation code, where if invalidating a location
+would cause the value to have 0 locations, then we should only emit a `mov` to a safe location if
+the refcount is 1 or more, and simply remove it from the hashmap otherwise. So although this could
+lead to some positive effects, it's not something we'd want to integrate to start with, but an
+additional optimisation that we'd want to implement later if we decided that it would be worthwhile
+to implement and test out.
+
+[asmquery]: ./asmquery.md
 [backend-driver]: ../design/backend-driver.md
 [design-overview]: ../design/
 [low-ir]: ./low-ir.md
