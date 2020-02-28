@@ -255,7 +255,9 @@ enum CCStackDepth {
 /// LIRC. Unlike Microwasm, we simply use method calls instead of having an actual "Operator"
 /// enum, as this allows us to easily give names to values.
 // TODO: This has no way to define including literal bytes, which is necessary for many operations.
-trait Context<Action> {
+trait Context {
+    type Action;
+
     /// Create a new immediate value.
     fn imm(&mut self, val: Immediate) -> Value;
     /// Create a new immediate with no value. This can be used anywhere an immediate is normally
@@ -269,14 +271,14 @@ trait Context<Action> {
     /// action and its params into a buffer. This buffer has a small, bounded maximum size, defined
     /// by the maxmimum number of actions in a single instruction definition in the associated
     /// AsmQuery machine specification.
-    fn action(&mut self, action: Action, args: &[Value]) -> Value;
+    fn action(&mut self, action: Self::Action, args: &[Value]) -> Value;
     /// Do a single Low IR action, without reading the result. This is kinda hacky right now, and
     /// there's probably a cleaner way of doing this, but this is essentially for actions that
     /// don't produce a meaningful value, like "store" or control flow opcodes. We need to have a
     /// separate `action_discard` method, as otherwise LIRC would try to look for an opcode that
     /// produces the "output" of these void-returning opcodes into a real location like a
     /// register, and obviously this will always fail.
-    fn action_discard(&mut self, action: Action, args: &[Value]);
+    fn action_discard(&mut self, action: Self::Action, args: &[Value]);
     /// Initialize a new calling convention. The locations for the CCLoc can either be specific
     /// locations or "generic" locations that only have to meet certain bounds.
     fn new_cc(&mut self, stack_depth: CCStackDepth, args: &[CCLoc]) -> CallConv;
@@ -344,8 +346,8 @@ trait Architecture {
     /// The type used as the Low IR opcode
     type Action;
 
-    fn call_indirect<C: Context<Self::Action>>(&mut self, ctx: &mut C);
-    fn add_i32<C: Context<Self::Action>>(&mut self, ctx: &mut C);
+    fn call_indirect<C: Context<Action = Self::Action>>(&mut self, ctx: &mut C);
+    fn add_i32<C: Context<Action = Self::Action>>(&mut self, ctx: &mut C);
     // ...
 }
 
@@ -356,7 +358,7 @@ struct X86Backend {
 impl Architecture for X86Backend {
     type Action = LowIR;
 
-    fn call_indirect<C: Context<Self::Action>>(&mut self, ctx: &mut C) {
+    fn call_indirect<C: Context<Action = Self::Action>>(&mut self, ctx: &mut C) {
         let callee_cc = ctx.new_cc(&[
             VMCTX_REGISTER.into(),
             CALLER_VMCTX_REGISTER.into(),
