@@ -110,8 +110,8 @@ trait Context {
 }
 ```
 
-The core of this is the `action` method, which is a single line of Low IR code. The rest of the
-methods are "directives" for LIRC, which again, are further explained in the [article for Low
+The core of this is the `action` method, which represents a single line of Low IR code. The rest of
+the methods are "directives" for LIRC, which again, are further explained in the [article for Low
 IR][low-ir].
 
 ## Diving Deeper
