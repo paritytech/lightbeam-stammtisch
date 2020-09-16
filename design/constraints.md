@@ -103,3 +103,28 @@ infinite loop which it breaks out of when a position for every argument has been
 effort has been made to guarantee that this loop always terminates, but little effort has been made
 to analyse and strictly bound the runtime of this loop. This is the first place to research when we
 get to the point of strictly guaranteeing runtime for Lightbeam.
+
+## How IR is Structured
+
+So as I touch on in the previous section, we can have as many intermediate representations as we
+like, as long as at each step we guarantee `O(1)` output instructions are generated for each input
+instructions (modulo the aforementioned caveats about lookahead and constant upper bounds). We
+currently use 1 IR, but as long as we keep adhering to the constraints in the previous section we
+can still have an overall `O(n)` runtime. This is how we can have this idea of LIRC storing a buffer
+of Low IR instructions and querying the machine specification for that sequence can still maintain
+`O(n)` overall complexity, as it's querying for _precisely one_ output machine code instruction, it
+_must_ find a single candidate output instruction at every step (so that it doesn't need to roll
+back an arbitrary number of instructions, only one), and so the maximum lookahead is precisely the
+number of Low IR instructions in the machine spec's instruction definition with the highest number
+of Low IR instructions. For example, if the machine spec has 3 instruction definitions with 1, 5,
+and 3 Low IR instructions in the corresponding sequence, then LIRC knows that once it reaches 6 Low
+IR instructions in its lookahead buffer that it will never find an instruction that matches that
+sequence, and so we have a strict, constant upper bound to lookahead. This same process can be done
+for any proposed IR to prove that our overall complexity remains linear.
+
+## Data Structures
+
+Every single data structure in the project _must_ be `O(1)` for every operation that is done during
+compilation. This usually means restricting ourselves for `HashMap`s or only accessing
+arrays/vectors using specific, stored indices. You can see in our stack allocation subsystem that
+this fact heavily influenced the design and what information ends up being stored.
