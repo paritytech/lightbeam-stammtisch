@@ -53,8 +53,8 @@ be the length in bytes of the module and `f` to be `kn` for some constant `k`, w
 
 1. It doesn't encourage splitting or joining modules unnecessarily, if you had greater than `O(x)`
   complexity you'd encourage splitting modules (for example, once `2x^2 < (2x)^2` it'd be cheaper to
-  use 2 modules), and if you had less you'd encourage joining modules, and this would make
-  predicting the price of a module unnecessarily difficult.
+  use 2 modules), and for the same reason if you had less you'd encourage joining modules, and this
+  would make predicting the price of a module unnecessarily difficult.
 2. Basing the price on the length of the module in bytes makes predicting price incredibly easy, and
   this is a value we will always have access to since we need it for other reasons. Most other
   properties of the module would require some calculation. Developers could also calculate the cost
