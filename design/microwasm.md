@@ -45,20 +45,44 @@ return
 ```
 
 Additionally, unreachable code leads to extremely complex and confusing problems with respect to
-types. To manage this, all control flow in Microwasm is condensed to a single form, and code after a
+types.
+
+To manage this, in Microwasm as much as possible is condensed to a single form, and code after a
 branch is statically impossible (unused blocks are still possible though, as it doesn't complicate
-matters to allow them). This form basically has every branch be infallible. If a branch is
-conditional, it _must_ specify a target for if the condition is false. This means that the two
-examples above would compile to the same Microwasm and be handled the same by the backend, which has
-the nice benefit of allowing optimisations benefitting one (such as making the branch infallible if
-the local has a constant value) can benefit both forms. We also condense all branch types to a
-single type, which is essentially the same as Wasm's `br_table`. This is because `br_table` with
-only a default target is equivalent to `br`, and `br_table` with precisely one target and a default
-is equivalent to `br_if`. As `br` doesn't consume a value to act as a condition, we additionally
-generate an `i32.const 0`-like statement so that all forms can be handled precisely equally. This
-means that no matter what kind of branch instruction is used in the input Wasm, there is only a
-single code path to handle all of them. This makes the code a lot more reliable, as bugs only need
-to be fixed in a single place.
+matters to allow them). The major differences are as follows:
+
+- All branches are infallible. If a branch is conditional, it _must_ specify a target for if the
+  condition is false. This means that the two examples above would compile to the same Microwasm and
+  be handled the same by the backend, which has the nice benefit of allowing optimisations
+  benefitting one (such as making the branch infallible if the local has a constant value) can
+  benefit both forms. 
+- There is only a single kind of branch, which is essentially the same as Wasm's `br_table`. This is
+  because `br_table` with only a default target is equivalent to `br`, and `br_table` with precisely
+  one target and a default is equivalent to `br_if`. As `br` doesn't consume a value to act as a
+  condition, we additionally generate an `i32.const 0`-like statement so that all forms can be
+  handled precisely equally. This means that no matter what kind of branch instruction is used in
+  the input Wasm, there is only a single code path to handle all of them. This makes the code a lot
+  more reliable, as bugs only need to be fixed in a single place.
+- Microwasm has no concept of locals, only stack items. To mutate a single place (like how locals
+  are designed in Wasm), you can use the `swap` instruction, which swaps the nth item with the top
+  item. This is a place where the implementation could be improved, as we currently use a simple
+  `Vec` to represent the stack, which means reserving space for every local in the function. Locals
+  are run-length encoded in Wasm, which leads to a trivial denial of service where you simply
+  reserve space for an extremely high number of locals. One important change to the implementation
+  here would be to instead have a hybrid data structure which allows the first n elements to remain
+  uninitialised until they're explicitly set, and having `local.get` just return the zero value for
+  the appropriate type when accessing an uninitialised element. Probably this would be a `HashMap`
+  combined with a `Vec`, so that pushes and pops can remain very cheap.
+- Control flow can only go forward, there is no stack of blocks within a function. Since without
+  extension this would make it impossible to return from the function, every function defines a
+  label `.return` which, when jumped to, returns from the function. This does not have to be a true
+  label, and the backend may generate a `ret` instead of a `jmp` to a location that has a `ret`.
+- All block kinds are condensed into a single type of block - there is no `loop` vs `block` vs `if`
+  distinction. To avoid losing information that would be important for optimisation, we annotate all
+  Microwasm blocks with how many callers they have - in Wasm, this can only be "exactly one" (in the
+  case of `block` and each branch of `if`) or "unknown" (in the case of `loop`). We cannot know the
+  number of callers for `loop` as the number of callers has to be defined when the block is defined,
+  and we haven't read the full function at that point.
 
 For more information, see `microwasm.rs` in the Lightbeam source code, which has been documented.
 
